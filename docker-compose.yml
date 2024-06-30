@@ -1,0 +1,11 @@
+services:
+  database:
+    container_name: bs-db
+    build:
+      context: ./database/Docker
+      dockerfile: db.Dockerfile
+    ports:
+      - 5554:5432
+    environment:
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=postgrespassword
