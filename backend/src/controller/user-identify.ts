@@ -8,18 +8,17 @@ export async function UserIdentify(req: Request, res: Response) {
   const phoneNumber: string = body.phoneNumber;
 
   // validate request body
-  if (!(email || phoneNumber)) {
-    return res.send("Please provide email or phone number");
+  if (!email && !phoneNumber) {
+    return res.status(400).json({ error: "Email or phone number is required" });
   }
 
   // find if there's a contact entry with either phone or email provided
   const listAllData: QueryResult = await query(
-    "SELECT * FROM contact WHERE email=$1 OR phoneNumber=$2 ORDER BY linkprecedence DESC;",
+    "SELECT * FROM contact WHERE email=$1 OR phonenumber=$2 ORDER BY linkprecedence DESC;",
     [email, phoneNumber]
   );
   const currentTimestamp = new Date().toISOString();
-  console.log(listAllData.rowCount);
-  console.log(listAllData.rows);
+
   enum LinkPrecedence {
     PRIMARY = "primary",
     SECONDARY = "secondary",
@@ -34,6 +33,7 @@ export async function UserIdentify(req: Request, res: Response) {
 
   let response: IdentifyResponse = {} as IdentifyResponse;
 
+  // if no records are found either of email or phone numbers, then create a new record
   if (listAllData.rowCount == 0) {
     const data: QueryResult = await query(
       "INSERT INTO contact (phoneNumber, email, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, phonenumber, linkprecedence, linkedid",
@@ -59,24 +59,51 @@ export async function UserIdentify(req: Request, res: Response) {
     let allPhoneNo: Set<string> = new Set();
     let allSecondaryIds: Set<number> = new Set();
     let primaryContactId: number = 0;
+    let primaryAccountCount: number = 0;
 
     listAllData.rows.forEach((row) => {
       allEmails.add(row.email);
       allPhoneNo.add(row.phonenumber);
-      console.log("=====", row);
+      // console.log("=====", row);
       if (row.linkprecedence == LinkPrecedence.SECONDARY) {
         allSecondaryIds.add(row.id);
         primaryContactId = row.linkedid;
       } else {
         primaryContactId = row.id;
+        primaryAccountCount++;
       }
     });
+    // check if there are two primary contact
+    if (primaryAccountCount > 1) {
+      if (listAllData.rowCount == 2) {
+        // update the second contact with secondary and add linked id of the first
+        const firstContactId = listAllData.rows[0].id;
+        const secondContactId = listAllData.rows[1].id;
+        const updateContact = await query(
+          "UPDATE contact SET linkprecedence=$1, linkedid=$2 WHERE id=$3 RETURNING id, email, phonenumber, linkprecedence, linkedid",
+          [LinkPrecedence.SECONDARY, firstContactId, secondContactId]
+        );
+        primaryContactId = firstContactId;
+        allSecondaryIds.add(secondContactId);
+        console.log(firstContactId, secondContactId);
+        console.log(updateContact.rows);
+        response = {
+          primaryContactId: primaryContactId,
+          emails: Array.from(allEmails),
+          phoneNumbers: Array.from(allPhoneNo),
+          secondaryContactIds: Array.from(allSecondaryIds),
+        };
+        return res.json(response);
+      }
+    }
 
+    // check if the combination of email and phone number exists in all rows including secondary contacts rows which are linked with primary contact
     const checkContact: QueryResult = await query(
-      "SELECT * FROM contact WHERE email=$1 AND phoneNumber=$2 ORDER BY linkprecedence DESC;",
+      "SELECT * FROM contact c1 INNER JOIN contact c2 ON c1.id=c2.linkedid WHERE (c1.email=$1 and c2.phonenumber=$2) OR (c2.email=$1 and c1.phonenumber=$2);",
       [email, phoneNumber]
     );
-    console.log(primaryContactId);
+
+    // if there's no contact with either linkedid or with phonenumber and email, then we create a new contact row
     if (checkContact.rowCount == 0) {
       const data: QueryResult = await query(
         "INSERT INTO contact (phonenumber, email, linkprecedence, linkedid, createdat, updatedat) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, phonenumber, linkprecedence, linkedid",
@@ -89,7 +116,7 @@ export async function UserIdentify(req: Request, res: Response) {
           currentTimestamp,
         ]
       );
-      console.log(data.rows.length > 0);
+
       if (data.rows.length > 0) {
         allEmails.add(email);
         allPhoneNo.add(phoneNumber);
