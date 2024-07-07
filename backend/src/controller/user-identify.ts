@@ -1,6 +1,11 @@
 import { Request, Response } from "express";
 import { query } from "../db/";
 import { QueryResult } from "pg";
+
+enum LinkPrecedence {
+  PRIMARY = "primary",
+  SECONDARY = "secondary",
+}
 export async function UserIdentify(req: Request, res: Response) {
   const body = req.body;
 
@@ -13,16 +18,25 @@ export async function UserIdentify(req: Request, res: Response) {
   }
 
   // find if there's a contact entry with either phone or email provided
-  const listAllData: QueryResult = await query(
-    "SELECT * FROM contact WHERE email=$1 OR phonenumber=$2 ORDER BY linkprecedence DESC;",
-    [email, phoneNumber]
-  );
-  const currentTimestamp = new Date().toISOString();
-
-  enum LinkPrecedence {
-    PRIMARY = "primary",
-    SECONDARY = "secondary",
+  let listAllData: QueryResult;
+  if (email && !phoneNumber) {
+    listAllData = await query(
+      "SELECT * FROM contact WHERE email=$1 ORDER BY linkprecedence DESC;",
+      [email]
+    );
+  } else if (phoneNumber && !email) {
+    listAllData = await query(
+      "SELECT * FROM contact WHERE phonenumber=$1 ORDER BY linkprecedence DESC;",
+      [phoneNumber]
+    );
+  } else {
+    listAllData = await query(
+      "SELECT * FROM contact WHERE email=$1 OR phonenumber=$2 ORDER BY linkprecedence DESC;",
+      [email, phoneNumber]
+    );
   }
+
+  const currentTimestamp = new Date().toISOString();
 
   type IdentifyResponse = {
     primaryContactId: number;
@@ -34,17 +48,36 @@ export async function UserIdentify(req: Request, res: Response) {
   let response: IdentifyResponse = {} as IdentifyResponse;
 
   // if no records are found either of email or phone numbers, then create a new record
+  // handling cases where only email or phone numbers is present, so need to have separate query string
   if (listAllData.rowCount == 0) {
-    const data: QueryResult = await query(
-      "INSERT INTO contact (phoneNumber, email, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, phonenumber, linkprecedence, linkedid",
-      [
-        phoneNumber,
-        email,
-        LinkPrecedence.PRIMARY,
-        currentTimestamp,
-        currentTimestamp,
-      ]
-    );
+    let data: QueryResult;
+    if (email && !phoneNumber) {
+      data = await query(
+        "INSERT INTO contact (email, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4) RETURNING id, email, phonenumber, linkprecedence, linkedid",
+        [email, LinkPrecedence.PRIMARY, currentTimestamp, currentTimestamp]
+      );
+    } else if (phoneNumber && !email) {
+      data = await query(
+        "INSERT INTO contact (phoneNumber, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4) RETURNING id, email, phonenumber, linkprecedence, linkedid",
+        [
+          phoneNumber,
+          LinkPrecedence.PRIMARY,
+          currentTimestamp,
+          currentTimestamp,
+        ]
+      );
+    } else {
+      data = await query(
+        "INSERT INTO contact (phoneNumber, email, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, phonenumber, linkprecedence, linkedid",
+        [
+          phoneNumber,
+          email,
+          LinkPrecedence.PRIMARY,
+          currentTimestamp,
+          currentTimestamp,
+        ]
+      );
+    }
 
     if (data.rowCount && data.rowCount > 0) {
       response = {
@@ -62,9 +95,12 @@ export async function UserIdentify(req: Request, res: Response) {
     let primaryAccountCount: number = 0;
 
     listAllData.rows.forEach((row) => {
-      allEmails.add(row.email);
-      allPhoneNo.add(row.phonenumber);
-      // console.log("=====", row);
+      if (row.email != null) {
+        allEmails.add(row.email);
+      }
+      if (row.phonenumber != null) {
+        allPhoneNo.add(row.phonenumber);
+      }
       if (row.linkprecedence == LinkPrecedence.SECONDARY) {
         allSecondaryIds.add(row.id);
         primaryContactId = row.linkedid;
@@ -97,41 +133,48 @@ export async function UserIdentify(req: Request, res: Response) {
       }
     }
 
-    // check if the combination of email and phone number exists in all rows including secondary contacts rows which are linked with primary contact
-    const checkContact: QueryResult = await query(
-      "SELECT * FROM contact c1 INNER JOIN contact c2 ON c1.id=c2.linkedid WHERE (c1.email=$1 and c2.phonenumber=$2) OR (c2.email=$1 and c1.phonenumber=$2);",
-      [email, phoneNumber]
-    );
-
-    // if there's no contact with either linkedid or with phonenumber and email, then we create a new contact row
-    if (checkContact.rowCount == 0) {
-      const data: QueryResult = await query(
-        "INSERT INTO contact (phonenumber, email, linkprecedence, linkedid, createdat, updatedat) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, phonenumber, linkprecedence, linkedid",
-        [
-          phoneNumber,
-          email,
-          LinkPrecedence.SECONDARY,
-          primaryContactId,
-          currentTimestamp,
-          currentTimestamp,
-        ]
+    if (email && phoneNumber) {
+      const checkContact: QueryResult = await query(
+        "SELECT * FROM contact c1 INNER JOIN contact c2 ON c1.id=c2.linkedid WHERE (c1.email=$1 and c2.phonenumber=$2) OR (c2.email=$1 and c1.phonenumber=$2);",
+        [email, phoneNumber]
       );
 
-      if (data.rows.length > 0) {
-        allEmails.add(email);
-        allPhoneNo.add(phoneNumber);
-        allSecondaryIds.add(data.rows[0].id);
+      // if there's no contact with either linkedid or with phonenumber and email, then we create a new contact row
+      if (checkContact.rowCount == 0 && email && phoneNumber) {
+        console.log("===check==count===");
+        const data: QueryResult = await query(
+          "INSERT INTO contact (phonenumber, email, linkprecedence, linkedid, createdat, updatedat) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, phonenumber, linkprecedence, linkedid",
+          [
+            phoneNumber,
+            email,
+            LinkPrecedence.SECONDARY,
+            primaryContactId,
+            currentTimestamp,
+            currentTimestamp,
+          ]
+        );
+
+        if (data.rows.length > 0) {
+          allEmails.add(email);
+          allPhoneNo.add(phoneNumber);
+          allSecondaryIds.add(data.rows[0].id);
+        }
       }
     }
 
+    // check if the combination of email and phone number exists in all rows including secondary contacts rows which are linked with primary contact
     const getAllLinkedContacts = await query(
       "SELECT * FROM contact WHERE id=$1 OR linkedid=$1",
       [primaryContactId]
     );
     if (getAllLinkedContacts.rowCount && getAllLinkedContacts.rowCount > 0) {
       getAllLinkedContacts.rows.forEach((row) => {
-        allEmails.add(row.email);
-        allPhoneNo.add(row.phonenumber);
+        if (row.email != null) {
+          allEmails.add(row.email);
+        }
+        if (row.phone != null) {
+          allPhoneNo.add(row.phonenumber);
+        }
         if (row.linkprecedence == LinkPrecedence.SECONDARY) {
           allSecondaryIds.add(row.id);
           primaryContactId = row.linkedid;
