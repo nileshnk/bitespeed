@@ -9,8 +9,8 @@ app.get("/", (_req: Request, res: Response) => {
 
 app.post("/identify", UserIdentify);
 
-const PORT = 4000;
-
-app.listen(PORT, "127.0.0.1", () => {
+const PORT = Number(process.env.APP_PORT) || 4000;
+const HOST = process.env.APP_HOST || "127.0.0.1";
+app.listen(PORT, HOST, () => {
   console.log("Server is listening on port", PORT);
 });
